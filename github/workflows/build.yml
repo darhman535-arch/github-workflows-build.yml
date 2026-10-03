@@ -1,0 +1,369 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tulis file proyek
+        run: |
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.1.4' apply false }
+          EOF
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "BiliarOverlay"
+          include ':app'
+          EOF
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          EOF
+          mkdir -p app
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.biliar.overlay'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.biliar.overlay"
+                  minSdk 24
+                  targetSdk 33
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          EOF
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <application android:label="Biliar Overlay">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:screenOrientation="landscape">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".OverlayService" android:exported="false"
+                      android:stopWithTask="true"/>
+              </application>
+          </manifest>
+          EOF
+          mkdir -p app/src/main/java/com/biliar/overlay
+          cat > app/src/main/java/com/biliar/overlay/MainActivity.java <<'EOF'
+          package com.biliar.overlay;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.HORIZONTAL);
+                  Button start = new Button(this);
+                  start.setText("MULAI OVERLAY");
+                  Button stop = new Button(this);
+                  stop.setText("HENTIKAN");
+                  box.addView(start, new LinearLayout.LayoutParams(0, -1, 1));
+                  box.addView(stop, new LinearLayout.LayoutParams(0, -1, 1));
+                  setContentView(box);
+
+                  start.setOnClickListener(v -> {
+                      if (!Settings.canDrawOverlays(this)) {
+                          startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                  Uri.parse("package:" + getPackageName())));
+                          return;
+                      }
+                      Intent i = new Intent(this, OverlayService.class);
+                      if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
+                      else startService(i);
+                  });
+                  stop.setOnClickListener(v -> stopService(new Intent(this, OverlayService.class)));
+              }
+          }
+          EOF
+          mkdir -p app/src/main/java/com/biliar/overlay
+          cat > app/src/main/java/com/biliar/overlay/OverlayService.java <<'EOF'
+          package com.biliar.overlay;
+
+          import android.annotation.SuppressLint;
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.Service;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.view.Gravity;
+          import android.view.WindowManager;
+          import android.webkit.WebView;
+          import android.widget.Button;
+
+          public class OverlayService extends Service {
+              private WindowManager wm;
+              private WebView web;
+              private Button toggle;
+              private WindowManager.LayoutParams lpWeb;
+              private boolean tembus = false;
+
+              private int tipe() {
+                  return Build.VERSION.SDK_INT >= 26
+                          ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                          : WindowManager.LayoutParams.TYPE_PHONE;
+              }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  Notification.Builder nb;
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationChannel ch = new NotificationChannel("ov", "Overlay",
+                              NotificationManager.IMPORTANCE_LOW);
+                      getSystemService(NotificationManager.class).createNotificationChannel(ch);
+                      nb = new Notification.Builder(this, "ov");
+                  } else {
+                      nb = new Notification.Builder(this);
+                  }
+                  nb.setContentTitle("Biliar Overlay aktif")
+                    .setSmallIcon(android.R.drawable.ic_menu_compass);
+                  startForeground(1, nb.build());
+
+                  if (web != null) return START_NOT_STICKY;
+                  wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+                  web = new WebView(this);
+                  web.setBackgroundColor(Color.TRANSPARENT);
+                  web.getSettings().setJavaScriptEnabled(true);
+                  web.loadUrl("file:///android_asset/index.html");
+                  lpWeb = new WindowManager.LayoutParams(-1, -1, tipe(),
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                  | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                  | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          PixelFormat.TRANSLUCENT);
+                  wm.addView(web, lpWeb);
+
+                  toggle = new Button(this);
+                  toggle.setText("🎮 MAIN");
+                  toggle.setOnClickListener(v -> {
+                      tembus = !tembus;
+                      if (tembus) lpWeb.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                      else lpWeb.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                      wm.updateViewLayout(web, lpWeb);
+                      toggle.setText(tembus ? "✋ ATUR" : "🎮 MAIN");
+                  });
+                  WindowManager.LayoutParams lpBtn = new WindowManager.LayoutParams(-2, -2, tipe(),
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT);
+                  lpBtn.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
+                  wm.addView(toggle, lpBtn);
+                  return START_NOT_STICKY;
+              }
+
+              @Override
+              public void onTaskRemoved(Intent rootIntent) { stopSelf(); }
+
+              @Override
+              public void onDestroy() {
+                  try { if (web != null) { wm.removeView(web); web.destroy(); web = null; } } catch (Exception e) {}
+                  try { if (toggle != null) { wm.removeView(toggle); toggle = null; } } catch (Exception e) {}
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent i) { return null; }
+          }
+          EOF
+          mkdir -p app/src/main/assets
+          cat > app/src/main/assets/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="id">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+          <title>Biliar Overlay</title>
+          <style>
+            html, body { margin:0; padding:0; width:100%; height:100%; background:transparent !important;
+              overflow:hidden; touch-action:none; -webkit-user-select:none; user-select:none; font-family:Arial,sans-serif; }
+            #bar { position:fixed; top:6px; left:50%; transform:translateX(-50%); display:flex; gap:6px; z-index:10; white-space:nowrap; }
+            .btn { padding:8px 12px; border:2px solid #fff; border-radius:20px; background:rgba(0,0,0,0.55); color:#fff; font-size:13px; font-weight:bold; }
+            .btn.aktif-on { background:rgba(0,170,60,0.9); }
+            .btn.aktif-off { background:rgba(200,30,30,0.9); }
+            .btn.terkunci { background:rgba(230,140,0,0.9); }
+            canvas { position:fixed; top:0; left:0; background:transparent; z-index:1; }
+          </style>
+          </head>
+          <body>
+          <div id="bar">
+            <button class="btn" id="btnOn">Guideline ON</button>
+            <button class="btn" id="btnOff">Guideline OFF</button>
+            <button class="btn" id="btnLock">🔓 Buka</button>
+          </div>
+          <canvas id="c"></canvas>
+          <script>
+          (function () {
+            var cv = document.getElementById('c'), ctx = cv.getContext('2d');
+            var btnOn = document.getElementById('btnOn'), btnOff = document.getElementById('btnOff'), btnLock = document.getElementById('btnLock');
+            var aktif = false, terkunci = false, W = 0, H = 0, MINW = 160, MINH = 80;
+            var T = {x:0,y:0}, Q = {x:0,y:0}, tbl = {l:0,t:0,r:0,b:0};
+            var pk = [{u:0,v:0},{u:0.5,v:0},{u:1,v:0},{u:0,v:1},{u:0.5,v:1},{u:1,v:1}];
+            var R = 14, PR = 20, drag = null, siap = false;
+
+            function setMode(on){ aktif=on; btnOn.className='btn'+(on?' aktif-on':''); btnOff.className='btn'+(!on?' aktif-off':''); gambar(); }
+            function setKunci(k){ terkunci=k; btnLock.textContent=k?'🔒 Terkunci':'🔓 Buka'; btnLock.className='btn'+(k?' terkunci':''); gambar(); }
+            btnOn.addEventListener('click', function(){ setMode(true); });
+            btnOff.addEventListener('click', function(){ setMode(false); });
+            btnLock.addEventListener('click', function(){ setKunci(!terkunci); });
+
+            function hitungUkuran(){ var mh=tbl.b-tbl.t; PR=Math.max(8,mh*0.065); R=Math.max(7,mh*0.04); }
+            function ukuran(){
+              var dpr=window.devicePixelRatio||1;
+              W=window.innerWidth||640; H=window.innerHeight||360;
+              cv.width=W*dpr; cv.height=H*dpr; cv.style.width=W+'px'; cv.style.height=H+'px';
+              ctx.setTransform(dpr,0,0,dpr,0,0);
+              if(!siap){
+                var mw=W*0.7, mh=mw/2; if(mh>H*0.72){mh=H*0.72; mw=mh*2;}
+                tbl.l=(W-mw)/2; tbl.r=tbl.l+mw; tbl.t=(H-mh)/2+20; tbl.b=tbl.t+mh;
+                hitungUkuran();
+                T.x=tbl.l+mw*0.6; T.y=tbl.t+mh*0.5; Q.x=tbl.l+mw*0.25; Q.y=tbl.t+mh*0.6; siap=true;
+              } else {
+                tbl.l=Math.max(0,Math.min(tbl.l,W-MINW)); tbl.r=Math.min(W,Math.max(tbl.r,tbl.l+MINW));
+                tbl.t=Math.max(0,Math.min(tbl.t,H-MINH)); tbl.b=Math.min(H,Math.max(tbl.b,tbl.t+MINH));
+                hitungUkuran();
+              }
+              jepit(T); jepit(Q); gambar();
+            }
+            function jepit(b){ b.x=Math.max(tbl.l+R,Math.min(tbl.r-R,b.x)); b.y=Math.max(tbl.t+R,Math.min(tbl.b-R,b.y)); }
+            function posLubang(i){ return { x:tbl.l+pk[i].u*(tbl.r-tbl.l), y:tbl.t+pk[i].v*(tbl.b-tbl.t) }; }
+            function daftarHandle(){
+              var out=[],hx,hy;
+              for(hy=-1;hy<=1;hy++) for(hx=-1;hx<=1;hx++){
+                if(hx===0&&hy===0) continue;
+                out.push({hx:hx,hy:hy,x:hx<0?tbl.l:(hx>0?tbl.r:(tbl.l+tbl.r)/2),y:hy<0?tbl.t:(hy>0?tbl.b:(tbl.t+tbl.b)/2)});
+              }
+              return out;
+            }
+            function garis(x1,y1,x2,y2,w,lw,putus){
+              ctx.beginPath(); ctx.setLineDash(putus?[8,6]:[]); ctx.strokeStyle=w; ctx.lineWidth=lw;
+              ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); ctx.setLineDash([]);
+            }
+            function bola(b,warna){
+              ctx.beginPath(); ctx.arc(b.x,b.y,R,0,Math.PI*2); ctx.fillStyle=warna; ctx.fill();
+              ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
+            }
+            function gambar(){
+              ctx.clearRect(0,0,W,H);
+              if(!aktif) return;
+              ctx.fillStyle='rgba(0,120,60,0.12)'; ctx.fillRect(tbl.l,tbl.t,tbl.r-tbl.l,tbl.b-tbl.t);
+              ctx.strokeStyle=terkunci?'rgba(255,255,255,0.9)':'rgba(255,200,0,0.95)'; ctx.lineWidth=3;
+              ctx.strokeRect(tbl.l,tbl.t,tbl.r-tbl.l,tbl.b-tbl.t);
+              var i,p;
+              for(i=0;i<6;i++){
+                p=posLubang(i); ctx.beginPath(); ctx.arc(p.x,p.y,PR,0,Math.PI*2);
+                ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fill();
+                ctx.strokeStyle=terkunci?'rgba(255,255,255,0.7)':'rgba(255,200,0,1)'; ctx.lineWidth=terkunci?1.5:2.5; ctx.stroke();
+              }
+              for(i=0;i<6;i++){ p=posLubang(i); garis(T.x,T.y,p.x,p.y,'rgba(255,255,0,0.65)',1.5,false); }
+              garis(Q.x,Q.y,T.x,T.y,'rgba(255,255,255,0.95)',2.5,false);
+              var dx=T.x-Q.x, dy=T.y-Q.y, len=Math.sqrt(dx*dx+dy*dy);
+              if(len>0.001){
+                dx/=len; dy/=len;
+                var px=T.x, py=T.y, L=tbl.l+R, Rr=tbl.r-R, Tp=tbl.t+R, B=tbl.b-R;
+                for(var k=0;k<6;k++){
+                  var tx=Infinity, ty=Infinity;
+                  if(dx>0) tx=(Rr-px)/dx; else if(dx<0) tx=(L-px)/dx;
+                  if(dy>0) ty=(B-py)/dy; else if(dy<0) ty=(Tp-py)/dy;
+                  var t=Math.min(tx,ty); if(!isFinite(t)||t<0) break;
+                  var nx=px+dx*t, ny=py+dy*t;
+                  garis(px,py,nx,ny,'rgba(0,220,255,0.9)',2,true);
+                  ctx.beginPath(); ctx.arc(nx,ny,3,0,Math.PI*2); ctx.fillStyle='rgba(0,220,255,1)'; ctx.fill();
+                  if(tx<ty) dx=-dx; else if(ty<tx) dy=-dy; else {dx=-dx; dy=-dy;}
+                  px=nx; py=ny;
+                }
+              }
+              bola(T,'rgba(0,0,0,0.6)'); bola(Q,'rgba(255,0,0,0.75)');
+              if(!terkunci) daftarHandle().forEach(function(h){
+                ctx.fillStyle='rgba(255,200,0,0.95)'; ctx.fillRect(h.x-8,h.y-8,16,16);
+                ctx.strokeStyle='#000'; ctx.lineWidth=1; ctx.strokeRect(h.x-8,h.y-8,16,16);
+              });
+            }
+            function jarak(b,p){ return Math.hypot(b.x-p.x,b.y-p.y); }
+
+            cv.addEventListener('pointerdown', function(e){
+              if(!aktif) return;
+              var p={x:e.clientX,y:e.clientY}, dT=jarak(T,p), dQ=jarak(Q,p), lim=R*2.5;
+              if(dT<=lim||dQ<=lim){ drag={tipe:'bola',obj:(dQ<dT?Q:T)}; cv.setPointerCapture(e.pointerId); return; }
+              if(terkunci) return;
+              var best=-1, bd=PR*1.4, i;
+              for(i=0;i<6;i++){ var d=jarak(posLubang(i),p); if(d<bd){bd=d;best=i;} }
+              if(best>=0){ drag={tipe:'lubang',idx:best}; cv.setPointerCapture(e.pointerId); return; }
+              var hs=daftarHandle(), j;
+              for(j=0;j<hs.length;j++) if(jarak(hs[j],p)<=24){ drag={tipe:'ukuran',hx:hs[j].hx,hy:hs[j].hy}; cv.setPointerCapture(e.pointerId); return; }
+              var m=14;
+              var luar=p.x>=tbl.l-m&&p.x<=tbl.r+m&&p.y>=tbl.t-m&&p.y<=tbl.b+m;
+              var dalam=p.x>tbl.l+m&&p.x<tbl.r-m&&p.y>tbl.t+m&&p.y<tbl.b-m;
+              if(luar&&!dalam){ drag={tipe:'geser',ox:p.x-tbl.l,oy:p.y-tbl.t}; cv.setPointerCapture(e.pointerId); }
+            });
+            cv.addEventListener('pointermove', function(e){
+              if(!drag) return;
+              var p={x:e.clientX,y:e.clientY};
+              if(drag.tipe==='bola'){ drag.obj.x=p.x; drag.obj.y=p.y; jepit(drag.obj); }
+              else if(drag.tipe==='lubang'){
+                pk[drag.idx].u=Math.max(0,Math.min(1,(p.x-tbl.l)/(tbl.r-tbl.l)));
+                pk[drag.idx].v=Math.max(0,Math.min(1,(p.y-tbl.t)/(tbl.b-tbl.t)));
+              } else if(drag.tipe==='ukuran'){
+                if(drag.hx<0) tbl.l=Math.max(0,Math.min(p.x,tbl.r-MINW));
+                if(drag.hx>0) tbl.r=Math.min(W,Math.max(p.x,tbl.l+MINW));
+                if(drag.hy<0) tbl.t=Math.max(0,Math.min(p.y,tbl.b-MINH));
+                if(drag.hy>0) tbl.b=Math.min(H,Math.max(p.y,tbl.t+MINH));
+                hitungUkuran(); jepit(T); jepit(Q);
+              } else if(drag.tipe==='geser'){
+                var w=tbl.r-tbl.l, h=tbl.b-tbl.t;
+                var nl=Math.max(0,Math.min(W-w,p.x-drag.ox)), nt=Math.max(0,Math.min(H-h,p.y-drag.oy));
+                var ddx=nl-tbl.l, ddy=nt-tbl.t;
+                tbl.l=nl; tbl.r=nl+w; tbl.t=nt; tbl.b=nt+h;
+                T.x+=ddx; T.y+=ddy; Q.x+=ddx; Q.y+=ddy; jepit(T); jepit(Q);
+              }
+              gambar();
+            });
+            function lepas(){ drag=null; }
+            cv.addEventListener('pointerup', lepas);
+            cv.addEventListener('pointercancel', lepas);
+
+            window.addEventListener('resize', ukuran);
+            setMode(false); setKunci(false); ukuran();
+          })();
+          </script>
+          </body>
+          </html>
+          EOF
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.4
+      - run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BiliarOverlay-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
